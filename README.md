@@ -120,7 +120,7 @@ npm login   --registry=https://registry.npmjs.org
 npm publish --registry=https://registry.npmjs.org
 ```
 
-**两条命令都必须显式带 `--registry`。** 本机 `npm config get registry` 指向 `registry.npmmirror.com`，那是只读镜像，发布会被拒；改全局配置又会拖慢平时装包，所以按次指定。
+**两条命令都别省 `--registry`。** npm 的凭据是**按源绑定**的：`npm login` 登的是哪个源，`~/.npmrc` 里就只在那个源下记一条 `//registry.npmjs.org/:_authToken`。所以 `npm config get registry` 一旦被切到 npmmirror 这类只读镜像（它本身也发不上去），不带参数的 `npm publish` 会直接报 `need auth`。
 
 发布前不必手动构建，`prepack` 会跑一次 `npm run build`；tsc 报错则发布中止。
 
