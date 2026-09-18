@@ -1,8 +1,9 @@
 /**
  * 客户端设置页：在设置窗口左侧加一项"复读打断"。
  *
- * 面板里编辑两样东西——拦截短句表（一行一句）与连续命中阈值，两者都写宿主侧
- * 注册的 settings 命名空间，保存后宿主侧立即按新配置判定。
+ * 版式照着官方设置页来：顶部一行"左标题 + 右保存"，下面每项是一行
+ * （左标题与描述、右控件），样式全部用 dsh 的设计令牌 `--dsw-*`，
+ * 由本模块自己注入 `<style>`，与官方 feature（如 theme 的字号行）同款做法。
  *
  * 本文件由 scripts/build-client.mjs 用 esbuild 单独打包成单文件 bundle
  * （`lib/client.js`），不走 tsc 的 lib 输出。
@@ -13,10 +14,14 @@ import type { Context } from '@deepseek-ai/cordis';
 // slots 与 settingsScope 两个客户端服务）。
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client';
-import { useEffect, useState, type ReactElement } from 'react';
+import { useEffect, useState, type KeyboardEvent, type ReactElement } from 'react';
 
 /** settings 命名空间，必须与宿主侧 config.ts 的 SETTINGS_NS 逐字一致。 */
 const SETTINGS_NS = 'repeat-guard';
+
+/** 阈值步进器的取值边界。 */
+const THRESHOLD_MIN = 1;
+const THRESHOLD_MAX = 9;
 
 /** 本插件配置节选。 */
 interface RepeatGuardSettings {
@@ -24,6 +29,263 @@ interface RepeatGuardSettings {
   fragments?: string[];
   /** 连续命中多少行才拦。 */
   threshold?: number;
+}
+
+/** 样式。令牌名取自 dsh 前端已发布的设计令牌表。 */
+const CSS = `
+.rg-root{display:flex;flex-direction:column;width:100%}
+.rg-head{display:flex;align-items:center;gap:12px;padding:2px 0 14px}
+.rg-headTitle{flex:1;min-width:0;color:var(--dsw-alias-label-primary);font-size:16px;font-weight:500;line-height:24px}
+.rg-headNote{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;white-space:nowrap}
+.rg-save{cursor:pointer;flex:none;height:32px;padding:0 16px;border:none;border-radius:16px;background:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-foreground);font-family:inherit;font-size:14px;line-height:22px}
+.rg-save:hover{background:var(--dsw-alias-button-primary-hover)}
+.rg-row{display:flex;align-items:center;gap:8px;padding:16px 0;border-bottom:.5px solid var(--dsw-alias-border-l2)}
+.rg-row--stack{flex-direction:column;align-items:stretch;gap:10px}
+.rg-rowText{display:flex;flex-direction:column;flex:1;gap:4px;min-width:0;padding-right:48px}
+.rg-rowTitle{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:400;line-height:22px}
+.rg-rowDesc{color:var(--dsw-alias-label-tertiary);font-size:12px;font-weight:400;line-height:18px}
+.rg-control{display:inline-flex;align-items:center;gap:8px}
+.rg-stepper{position:relative;display:inline-flex;justify-content:center;align-items:center;min-width:72px;height:36px;border-radius:18px;background:var(--dsw-alias-bg-module-platform)}
+.rg-stepperValue{min-width:18px;text-align:center;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary);font-size:14px;line-height:22px}
+.rg-stepperUnit{color:var(--dsw-alias-label-secondary);font-size:14px;line-height:22px}
+.rg-arrows{position:absolute;right:8px;display:flex;flex-direction:column;gap:2px;opacity:0}
+.rg-stepper:hover .rg-arrows,.rg-stepper:focus-within .rg-arrows{opacity:1}
+.rg-arrow{display:inline-flex;justify-content:center;align-items:center;width:17px;height:12px;padding:0;border:none;border-radius:3px;cursor:pointer;color:var(--dsw-alias-label-primary);background:color-mix(in srgb, var(--dsw-alias-bg-layer-1) 75%, transparent)}
+.rg-arrow:hover:not(:disabled){background:var(--dsw-alias-bg-layer-1)}
+.rg-arrow:disabled{color:var(--dsw-alias-label-caption);cursor:default}
+.rg-list{display:flex;flex-direction:column;gap:2px;width:100%;max-height:300px;overflow-y:auto;padding:4px;border-radius:12px;background:var(--dsw-alias-bg-module-platform);box-sizing:border-box}
+.rg-item{display:flex;align-items:center;gap:8px;padding:5px 6px 5px 12px;border-radius:8px;font-size:14px;line-height:22px;color:var(--dsw-alias-label-primary)}
+.rg-item:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.rg-itemText{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rg-remove{flex:none;display:inline-flex;justify-content:center;align-items:center;width:24px;height:24px;padding:0;border:none;border-radius:12px;cursor:pointer;background:transparent;color:var(--dsw-alias-label-tertiary)}
+.rg-remove:hover{background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary)}
+.rg-empty{padding:10px 12px;color:var(--dsw-alias-label-caption);font-size:13px;line-height:20px}
+.rg-addRow{display:flex;align-items:center;gap:8px;width:100%}
+.rg-input{flex:1;min-width:0;height:36px;box-sizing:border-box;padding:0 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:transparent;color:var(--dsw-alias-label-primary);font-family:inherit;font-size:14px;line-height:22px}
+.rg-input:focus{outline:none;border-color:var(--dsw-alias-border-l4)}
+.rg-button{cursor:pointer;flex:none;height:32px;padding:0 14px;border:none;border-radius:16px;background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary);font-family:inherit;font-size:14px;line-height:22px}
+.rg-button:hover{background:var(--dsw-alias-interactive-bg-active)}
+`;
+
+const STYLE_TAG = 'dsh-repeat-guard/panel.css';
+
+/** 注入一次本插件的样式；重复挂载不重复插。 */
+function injectStyle(): void {
+  if (typeof document === 'undefined' || document.querySelector(`style[data-plugin-css="${STYLE_TAG}"]`) !== null) {
+    return;
+  }
+  const tag = document.createElement('style');
+  tag.dataset.plugin = 'dsh-repeat-guard';
+  tag.dataset.pluginCss = STYLE_TAG;
+  tag.textContent = CSS;
+  document.head.appendChild(tag);
+}
+
+interface StepperProps {
+  value: number;
+  min: number;
+  max: number;
+  unit: string;
+  label: string;
+  onChange: (next: number) => void;
+}
+
+/** 数字步进器：数值居中，悬停或聚焦时右侧浮出上下箭头。 */
+function Stepper({ value, min, max, unit, label, onChange }: StepperProps): ReactElement {
+  return (
+    <span className="rg-control">
+      <span className="rg-stepper">
+        <span className="rg-stepperValue">{value}</span>
+        <span className="rg-arrows">
+          <button
+            type="button"
+            className="rg-arrow"
+            aria-label={`增大${label}`}
+            disabled={value >= max}
+            onClick={() => {
+              onChange(value + 1);
+            }}
+          >
+            <svg width="9" height="9" viewBox="0 0 9 9" aria-hidden="true">
+              <path
+                d="M1.4 6.2 4.5 3.1l3.1 3.1"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+          <button
+            type="button"
+            className="rg-arrow"
+            aria-label={`减小${label}`}
+            disabled={value <= min}
+            onClick={() => {
+              onChange(value - 1);
+            }}
+          >
+            <svg width="9" height="9" viewBox="0 0 9 9" aria-hidden="true">
+              <path
+                d="M1.4 2.8 4.5 5.9l3.1-3.1"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+        </span>
+      </span>
+      <span className="rg-stepperUnit">{unit}</span>
+    </span>
+  );
+}
+
+interface FragmentListProps {
+  items: readonly string[];
+  draft: string;
+  onDraft: (next: string) => void;
+  onAdd: () => void;
+  onRemove: (index: number) => void;
+}
+
+/** 短句表：可滚动的列表，逐条删除，底部一行新增。 */
+function FragmentList({ items, draft, onDraft, onAdd, onRemove }: FragmentListProps): ReactElement {
+  function handleKey(event: KeyboardEvent<HTMLInputElement>): void {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      onAdd();
+    }
+  }
+
+  return (
+    <>
+      <div className="rg-list">
+        {items.length === 0 ? <div className="rg-empty">表是空的，不会拦截任何短句。</div> : null}
+        {items.map((item, index) => (
+          <div className="rg-item" key={`${item}#${String(index)}`}>
+            <span className="rg-itemText">{item}</span>
+            <button
+              type="button"
+              className="rg-remove"
+              aria-label={`删除 ${item}`}
+              onClick={() => {
+                onRemove(index);
+              }}
+            >
+              <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+                <path
+                  d="M3 3l6 6M9 3l-6 6"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.4"
+                  strokeLinecap="round"
+                />
+              </svg>
+            </button>
+          </div>
+        ))}
+      </div>
+      <div className="rg-addRow">
+        <input
+          className="rg-input"
+          value={draft}
+          placeholder="新增短句，连标点一起写，回车添加"
+          onChange={(event) => {
+            onDraft(event.target.value);
+          }}
+          onKeyDown={handleKey}
+        />
+        <button type="button" className="rg-button" onClick={onAdd}>
+          添加
+        </button>
+      </div>
+    </>
+  );
+}
+
+interface FormProps {
+  initial: RepeatGuardSettings;
+  onSave: (fragments: readonly string[], threshold: number) => Promise<void>;
+}
+
+/** 设置表单：标题行 + 阈值行 + 短句表行；改动先留在本地，点保存才写。 */
+function Form({ initial, onSave }: FormProps): ReactElement {
+  const [items, setItems] = useState<readonly string[]>(() => initial.fragments ?? []);
+  const [count, setCount] = useState(() => initial.threshold ?? 1);
+  const [draft, setDraft] = useState('');
+  const [note, setNote] = useState('');
+
+  function add(): void {
+    const value = draft.trim();
+    if (value === '') {
+      return;
+    }
+    setItems([...items, value]);
+    setDraft('');
+    setNote('');
+  }
+
+  function remove(index: number): void {
+    setItems(items.filter((_, at) => at !== index));
+    setNote('');
+  }
+
+  function save(): void {
+    setNote('保存中…');
+    onSave(items, count)
+      .then(() => {
+        setNote('已保存');
+      })
+      .catch((error: unknown) => {
+        setNote(`保存失败：${String(error)}`);
+      });
+  }
+
+  return (
+    <div className="rg-root">
+      <div className="rg-head">
+        <span className="rg-headTitle">复读打断</span>
+        <span className="rg-headNote">{note}</span>
+        <button type="button" className="rg-save" onClick={save}>
+          保存
+        </button>
+      </div>
+      <div className="rg-row">
+        <div className="rg-rowText">
+          <div className="rg-rowTitle">连续命中次数</div>
+          <div className="rg-rowDesc">连着几个短句行命中才拦截；填 1 表示发现即拦</div>
+        </div>
+        <Stepper
+          value={count}
+          min={THRESHOLD_MIN}
+          max={THRESHOLD_MAX}
+          unit="次"
+          label="连续命中次数"
+          onChange={(next) => {
+            setCount(next);
+            setNote('');
+          }}
+        />
+      </div>
+      <div className="rg-row rg-row--stack">
+        <div className="rg-rowText">
+          <div className="rg-rowTitle">拦截短句</div>
+          <div className="rg-rowDesc">一行一句，连标点一起写；只算独占一行的整行匹配</div>
+        </div>
+        <FragmentList
+          items={items}
+          draft={draft}
+          onDraft={setDraft}
+          onAdd={add}
+          onRemove={remove}
+        />
+      </div>
+    </div>
+  );
 }
 
 /** 注册设置页需要的服务；这两个是 cordis 服务名，不是包名。 */
@@ -34,64 +296,8 @@ export const inject = ['slots', 'settingsScope'];
  * @param ctx - 浏览器侧 cordis 上下文。
  */
 export function apply(ctx: Context): void {
+  injectStyle();
   const scope = ctx.settingsScope.bind<RepeatGuardSettings>({ namespace: SETTINGS_NS });
-
-  function Form({ initial }: { initial: RepeatGuardSettings }): ReactElement {
-    const [fragments, setFragments] = useState(() => (initial.fragments ?? []).join('\n'));
-    const [threshold, setThreshold] = useState(() => String(initial.threshold ?? 1));
-    const [message, setMessage] = useState('');
-
-    function save(): void {
-      const list = fragments
-        .split('\n')
-        .map((line) => line.trim())
-        .filter((line) => line !== '');
-      const count = Number(threshold);
-      setMessage('保存中…');
-      scope
-        .set('fragments', list)
-        .then(() => scope.set('threshold', count))
-        .then(() => {
-          setMessage('已保存');
-        })
-        .catch((error: unknown) => {
-          setMessage(`保存失败：${String(error)}`);
-        });
-    }
-
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-        <label>
-          <span>连续命中次数</span>
-          <input
-            type="number"
-            value={threshold}
-            onChange={(event) => {
-              setThreshold(event.target.value);
-            }}
-          />
-          <span>填 1 表示命中即拦；填 n 表示连着 n 行都命中才拦。</span>
-        </label>
-        <label>
-          <span>拦截短句（一行一句，连标点一起写）</span>
-          <textarea
-            rows={16}
-            style={{ width: '100%', fontFamily: 'monospace' }}
-            value={fragments}
-            onChange={(event) => {
-              setFragments(event.target.value);
-            }}
-          />
-        </label>
-        <div>
-          <button type="button" onClick={save}>
-            保存
-          </button>
-          <span>{message}</span>
-        </div>
-      </div>
-    );
-  }
 
   function Panel(): ReactElement {
     const [snapshot, setSnapshot] = useState(() => scope.getSnapshot());
@@ -104,9 +310,17 @@ export function apply(ctx: Context): void {
     );
     const value = snapshot.value;
     if (snapshot.status !== 'ready' || value === undefined) {
-      return <p>{`配置尚未就绪（${snapshot.status}）`}</p>;
+      return <div className="rg-empty">{`配置尚未就绪（${snapshot.status}）`}</div>;
     }
-    return <Form initial={value} />;
+    return (
+      <Form
+        initial={value}
+        onSave={async (fragments, threshold) => {
+          await scope.set('fragments', [...fragments]);
+          await scope.set('threshold', threshold);
+        }}
+      />
+    );
   }
 
   ctx.slots.inject('settings.section', () =>
