@@ -1,12 +1,12 @@
 # 依赖
 node_modules/
 
+# 构建产物：tsc 从 src/ 产出，npm publish 前由 prepack 现构建，随包发布（files 字段已含 lib）。
+# 但不进版本库——入库会让"改了 src/ 忘了 build"的旧产物静默跟着提交。
+lib/
+
 # 编辑器与系统
 .vscode/
 .idea/
 *.swp
 .DS_Store
-
-# lib/ 是 tsc 产物，但故意不在此忽略：dsh 的 loader 是原生 ESM import，没有转译层，
-# 运行时只认 lib/index.js；而包管理器默认拦截依赖的安装脚本，prepare 不保证会执行。
-# 所以 lib/ 必须跟源码一起保留，改完 src/ 记得跑一次 npm run build。

@@ -9,6 +9,7 @@
 | 运行时依赖 | **无**，不产生任何运行时 import |
 | 构建期依赖 | 仅 TypeScript |
 | 入口 | `lib/index.js`（由 `src/index.ts` 编译得到） |
+| 分发 | npm 包 `dsh-repeat-guard` |
 
 ---
 
@@ -110,21 +111,32 @@ npm install
 npm run build        # 等价于 tsc，产出 lib/
 ```
 
-## 安装到 dsh
+`lib/` **不进版本库**：`npm publish` 前由 `prepack` 钩子现构建，随包发布（`files` 字段已含 `lib`）。这样"改了 `src/` 忘了 build"不会让旧产物静默跟着提交——代价是构建失败时发不出去，这是有意的。
 
-本插件是一个 **dsh bundle**——包根带 `cordis.patch.yml`，由 `package.json` 的 `dsh.bundle.patch` 声明。装进 profile 时它会自动进入 `dsh.profile.bundles` 分层栈，**不需要改 profile 自己的 `cordis.patch.yml`**。
+## 发布
 
 ```bash
-dsh plugin --profile web add dsh-repeat-guard                 # npm 包
-dsh plugin --profile web add github:<owner>/dsh-repeat-guard  # git 仓库
-dsh plugin --profile web add /abs/path/to/dsh-repeat-guard    # 本地目录（开发用）
+npm login   --registry=https://registry.npmjs.org
+npm publish --registry=https://registry.npmjs.org
 ```
+
+**两条命令都必须显式带 `--registry`。** 本机 `npm config get registry` 指向 `registry.npmmirror.com`，那是只读镜像，发布会被拒；改全局配置又会拖慢平时装包，所以按次指定。
+
+发布前不必手动构建，`prepack` 会跑一次 `npm run build`；tsc 报错则发布中止。
+
+## 安装到 dsh
+
+```bash
+dsh plugin --profile web add dsh-repeat-guard
+```
+
+本插件是一个 **dsh bundle**——包根带 `cordis.patch.yml`，由 `package.json` 的 `dsh.bundle.patch` 声明。装进 profile 时它会自动进入 `dsh.profile.bundles` 分层栈，**不需要改 profile 自己的 `cordis.patch.yml`**。
 
 装完**必须重启 dsh 进程**。`patchReload: live` 只重载已有的层，不会加载新增的层——实测编辑后运行中的进程既不加载也不报错。
 
 机制（dsh 源码）：`dsh plugin` 是 pnpm 转发器（`dsh/lib/plugin-*.js`），在 profile 目录跑 `pnpm add` 后按**安装后的真实包名**调和 `dsh.profile.bundles`，判定条件就是 `dsh.bundle.patch` 是否为 undefined（没有就印一句 "declares no dsh.bundle — installed as a plain dependency, not a profile layer"）。加载时 `dsh-app-boot` 的 `loadProfileDirectory` 对该字段做 `join(packageDir, declared)` 并当 overlay patch 读；声明缺失直接抛错。
 
-本地开发用 `link:` 安装（`dsh plugin --profile web add <绝对路径>` 即得），之后改源码只需 `npm run build` + 重启，不必重装。
+**只走 npm 分发。** git 安装（`add github:...`）会让 pnpm 拦下依赖的构建脚本，装出来的包没有 `lib/index.js`，除非安装者手工去 profile 的 `pnpm-workspace.yaml` 加 `allowBuilds` 白名单——那等于把本机的构建配置摊派给每个使用者。本地目录安装同理，只适合开发调试，不作为分发方式。
 
 验证是否加载：
 
@@ -144,7 +156,7 @@ journalctl --user -u dsh-web --no-pager | grep -a repeat-guard
 由这条约束派生的两点：
 
 - 类型一律在 `src/types.ts` 里声明，不 import dsh 的类型（那还要为 `tsc` 配 `paths` 指向 dsh 安装目录，路径里带 node 版本号，dsh 一升级就失效），也不引 `@types/node`（各模块按需 `declare` 用到的全局）；
-- 只用 TypeScript 写源码，由 `tsc` 产出 `lib/` 供 dsh 加载。dsh 的 loader 是原生 ESM import，**没有转译层**，运行时读到的永远是编译产物——改完 `src/` 必须重新构建，否则改动不会生效。
+- 只用 TypeScript 写源码，由 `tsc` 产出 `lib/` 供 dsh 加载。dsh 的 loader 是原生 ESM import，**没有转译层**，运行时读到的永远是编译产物——改完 `src/` 必须重新构建才能生效。`lib/` 只随 npm 包发布，不进版本库。
 
 ## 代码约定
 
@@ -170,7 +182,7 @@ journalctl --user -u dsh-web --no-pager | grep -a repeat-guard
 │   ├── resume.ts                续跑：注入文案、消息构造、推送
 │   ├── stream-guard.ts          llm/stream 监听器：思考段检测与掐断
 │   └── turn-stopping-guard.ts   agent/turn-stopping 监听器：让本轮继续
-├── lib/                         tsc 产物，dsh 实际加载 lib/index.js
+├── lib/                         tsc 产物（已 gitignore），dsh 实际加载 lib/index.js
 ├── package.json
 └── tsconfig.json
 ```

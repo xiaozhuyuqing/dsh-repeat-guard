@@ -24,7 +24,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "prepare": "npm run build"
+    "prepack": "npm run build"
   },
   "license": "MIT",
   "author": "yuqing",
