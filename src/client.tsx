@@ -23,13 +23,24 @@ const SETTINGS_NS = 'repeat-guard';
 const THRESHOLD_MIN = 1;
 const THRESHOLD_MAX = 9;
 
-/** 本插件配置节选。 */
+/** 宿主侧注册的配置。字段都带 schema 默认值，所以在这里是必有的。 */
 interface RepeatGuardSettings {
   /** 拦截短句表。 */
-  fragments?: string[];
-  /** 连续命中多少行才拦。 */
-  threshold?: number;
+  fragments: string[];
+  /** 连续命中多少次才拦。 */
+  threshold: number;
+  /** 是否把"整行由多个表项拼成"也算命中。 */
+  inlineRepeat: boolean;
+  /** 截断后推给模型的指令正文。 */
+  resumeText: string;
+  /** 注入消息的折叠行摘要。 */
+  resumeSummary: string;
+  /** 累计拦截次数，由宿主侧维护。 */
+  count: number;
 }
+
+/** 输入框与文本域的公共外观。 */
+const FIELD = `height:36px;box-sizing:border-box;padding:0 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:transparent;color:var(--dsw-alias-label-primary);font-family:inherit;font-size:14px;line-height:22px`;
 
 /** 样式。令牌名取自 dsh 前端已发布的设计令牌表。 */
 const CSS = `
@@ -53,6 +64,11 @@ const CSS = `
 .rg-arrow{display:inline-flex;justify-content:center;align-items:center;width:17px;height:12px;padding:0;border:none;border-radius:3px;cursor:pointer;color:var(--dsw-alias-label-primary);background:color-mix(in srgb, var(--dsw-alias-bg-layer-1) 75%, transparent)}
 .rg-arrow:hover:not(:disabled){background:var(--dsw-alias-bg-layer-1)}
 .rg-arrow:disabled{color:var(--dsw-alias-label-caption);cursor:default}
+.rg-switch{position:relative;flex:none;width:40px;height:24px;padding:0;border:none;border-radius:12px;cursor:pointer;background:var(--dsw-alias-bg-module-platform);transition:background .15s ease}
+.rg-switch::after{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:var(--dsw-alias-label-primary-foreground);transition:transform .15s ease}
+.rg-switch[aria-checked="true"]{background:var(--dsw-alias-brand-primary)}
+.rg-switch[aria-checked="true"]::after{transform:translateX(16px)}
+.rg-count{display:inline-flex;align-items:center;justify-content:center;min-width:72px;height:36px;padding:0 14px;box-sizing:border-box;border-radius:18px;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-primary);font-size:14px;line-height:22px;font-variant-numeric:tabular-nums}
 .rg-list{display:flex;flex-direction:column;gap:2px;width:100%;max-height:300px;overflow-y:auto;padding:4px;border-radius:12px;background:var(--dsw-alias-bg-module-platform);box-sizing:border-box}
 .rg-item{display:flex;align-items:center;gap:8px;padding:5px 6px 5px 12px;border-radius:8px;font-size:14px;line-height:22px;color:var(--dsw-alias-label-primary)}
 .rg-item:hover{background:var(--dsw-alias-interactive-bg-hover)}
@@ -61,8 +77,10 @@ const CSS = `
 .rg-remove:hover{background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary)}
 .rg-empty{padding:10px 12px;color:var(--dsw-alias-label-caption);font-size:13px;line-height:20px}
 .rg-addRow{display:flex;align-items:center;gap:8px;width:100%}
-.rg-input{flex:1;min-width:0;height:36px;box-sizing:border-box;padding:0 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:transparent;color:var(--dsw-alias-label-primary);font-family:inherit;font-size:14px;line-height:22px}
-.rg-input:focus{outline:none;border-color:var(--dsw-alias-border-l4)}
+.rg-input{flex:1;min-width:0;${FIELD}}
+.rg-summaryInput{flex:none;width:260px;${FIELD}}
+.rg-textarea{width:100%;min-height:84px;box-sizing:border-box;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:transparent;color:var(--dsw-alias-label-primary);font-family:inherit;font-size:14px;line-height:22px;resize:vertical}
+.rg-input:focus,.rg-summaryInput:focus,.rg-textarea:focus{outline:none;border-color:var(--dsw-alias-border-l4)}
 .rg-button{cursor:pointer;flex:none;height:32px;padding:0 14px;border:none;border-radius:16px;background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary);font-family:inherit;font-size:14px;line-height:22px}
 .rg-button:hover{background:var(--dsw-alias-interactive-bg-active)}
 `;
@@ -144,6 +162,28 @@ function Stepper({ value, min, max, unit, label, onChange }: StepperProps): Reac
   );
 }
 
+interface SwitchProps {
+  checked: boolean;
+  label: string;
+  onChange: (next: boolean) => void;
+}
+
+/** 开关。 */
+function Switch({ checked, label, onChange }: SwitchProps): ReactElement {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      className="rg-switch"
+      onClick={() => {
+        onChange(!checked);
+      }}
+    />
+  );
+}
+
 interface FragmentListProps {
   items: readonly string[];
   draft: string;
@@ -209,13 +249,19 @@ function FragmentList({ items, draft, onDraft, onAdd, onRemove }: FragmentListPr
 
 interface FormProps {
   initial: RepeatGuardSettings;
-  onSave: (fragments: readonly string[], threshold: number) => Promise<void>;
+  /** 宿主侧实时计数；由外层订阅刷新，不参与本地编辑。 */
+  count: number;
+  onReset: () => Promise<void>;
+  onSave: (next: RepeatGuardSettings) => Promise<void>;
 }
 
-/** 设置表单：标题行 + 阈值行 + 短句表行；改动先留在本地，点保存才写。 */
-function Form({ initial, onSave }: FormProps): ReactElement {
-  const [items, setItems] = useState<readonly string[]>(() => initial.fragments ?? []);
-  const [count, setCount] = useState(() => initial.threshold ?? 1);
+/** 设置表单：标题行 + 五行设置；改动先留在本地，点保存才写。 */
+function Form({ initial, count, onReset, onSave }: FormProps): ReactElement {
+  const [items, setItems] = useState<readonly string[]>(initial.fragments);
+  const [limit, setLimit] = useState(initial.threshold);
+  const [inlineRepeat, setInlineRepeat] = useState(initial.inlineRepeat);
+  const [resumeText, setResumeText] = useState(initial.resumeText);
+  const [resumeSummary, setResumeSummary] = useState(initial.resumeSummary);
   const [draft, setDraft] = useState('');
   const [note, setNote] = useState('');
 
@@ -236,12 +282,29 @@ function Form({ initial, onSave }: FormProps): ReactElement {
 
   function save(): void {
     setNote('保存中…');
-    onSave(items, count)
+    onSave({
+      fragments: [...items],
+      threshold: limit,
+      inlineRepeat,
+      resumeText,
+      resumeSummary,
+      count,
+    })
       .then(() => {
         setNote('已保存');
       })
       .catch((error: unknown) => {
         setNote(`保存失败：${String(error)}`);
+      });
+  }
+
+  function reset(): void {
+    onReset()
+      .then(() => {
+        setNote('计数已清零');
+      })
+      .catch((error: unknown) => {
+        setNote(`清零失败：${String(error)}`);
       });
   }
 
@@ -256,17 +319,45 @@ function Form({ initial, onSave }: FormProps): ReactElement {
       </div>
       <div className="rg-row">
         <div className="rg-rowText">
+          <div className="rg-rowTitle">累计拦截</div>
+          <div className="rg-rowDesc">重复打断计数</div>
+        </div>
+        <span className="rg-control">
+          <span className="rg-count">{count} 次</span>
+          <button type="button" className="rg-button" onClick={reset}>
+            清零
+          </button>
+        </span>
+      </div>
+      <div className="rg-row">
+        <div className="rg-rowText">
           <div className="rg-rowTitle">连续命中次数</div>
-          <div className="rg-rowDesc">连着几个短句行命中才拦截；填 1 表示发现即拦</div>
+          <div className="rg-rowDesc">循环次数上限；填 1 表示发现即拦</div>
         </div>
         <Stepper
-          value={count}
+          value={limit}
           min={THRESHOLD_MIN}
           max={THRESHOLD_MAX}
           unit="次"
           label="连续命中次数"
           onChange={(next) => {
-            setCount(next);
+            setLimit(next);
+            setNote('');
+          }}
+        />
+      </div>
+      <div className="rg-row">
+        <div className="rg-rowText">
+          <div className="rg-rowTitle">行内重复检测</div>
+          <div className="rg-rowDesc">
+            拦截类似"好。好。好。"的行内循环；关闭时只检测独立段落。
+          </div>
+        </div>
+        <Switch
+          checked={inlineRepeat}
+          label="行内重复检测"
+          onChange={(next) => {
+            setInlineRepeat(next);
             setNote('');
           }}
         />
@@ -274,7 +365,7 @@ function Form({ initial, onSave }: FormProps): ReactElement {
       <div className="rg-row rg-row--stack">
         <div className="rg-rowText">
           <div className="rg-rowTitle">拦截短句</div>
-          <div className="rg-rowDesc">一行一句，连标点一起写；只算独占一行的整行匹配</div>
+          <div className="rg-rowDesc">标点不可省略</div>
         </div>
         <FragmentList
           items={items}
@@ -282,6 +373,34 @@ function Form({ initial, onSave }: FormProps): ReactElement {
           onDraft={setDraft}
           onAdd={add}
           onRemove={remove}
+        />
+      </div>
+      <div className="rg-row rg-row--stack">
+        <div className="rg-rowText">
+          <div className="rg-rowTitle">拦截提示词</div>
+          <div className="rg-rowDesc">截断后上下文注入的提示词</div>
+        </div>
+        <textarea
+          className="rg-textarea"
+          value={resumeText}
+          onChange={(event) => {
+            setResumeText(event.target.value);
+            setNote('');
+          }}
+        />
+      </div>
+      <div className="rg-row">
+        <div className="rg-rowText">
+          <div className="rg-rowTitle">拦截摘要</div>
+          <div className="rg-rowDesc">上下文注入的简介信息，仅用户可见</div>
+        </div>
+        <input
+          className="rg-summaryInput"
+          value={resumeSummary}
+          onChange={(event) => {
+            setResumeSummary(event.target.value);
+            setNote('');
+          }}
         />
       </div>
     </div>
@@ -315,9 +434,16 @@ export function apply(ctx: Context): void {
     return (
       <Form
         initial={value}
-        onSave={async (fragments, threshold) => {
-          await scope.set('fragments', [...fragments]);
-          await scope.set('threshold', threshold);
+        count={value.count}
+        onReset={async () => {
+          await scope.set('count', 0);
+        }}
+        onSave={async (next) => {
+          await scope.set('fragments', next.fragments);
+          await scope.set('threshold', next.threshold);
+          await scope.set('inlineRepeat', next.inlineRepeat);
+          await scope.set('resumeText', next.resumeText);
+          await scope.set('resumeSummary', next.resumeSummary);
         }}
       />
     );

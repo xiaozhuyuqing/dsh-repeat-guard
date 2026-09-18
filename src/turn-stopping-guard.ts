@@ -6,16 +6,18 @@
  */
 
 import type { Agent } from '@deepseek-ai/dsh-agent';
+import type { ConfigSource } from './config.js';
 import { reviveTurn } from './resume.js';
 import type { GuardState } from './types.js';
 
 /**
  * 造一个 `agent/turn-stopping` 监听器。
  * @param state - 跨监听保留的拦截状态。
+ * @param readConfig - 取当前配置。
  * @returns 监听器；只在有待续跑标记时推一条输入。
  */
-export function createTurnStoppingGuard(state: GuardState) {
+export function createTurnStoppingGuard(state: GuardState, readConfig: ConfigSource) {
   return (payload: { agent: Agent }): void => {
-    reviveTurn(state, payload.agent);
+    reviveTurn(state, payload.agent, readConfig());
   };
 }

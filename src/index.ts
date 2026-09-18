@@ -22,7 +22,7 @@
 // 本文件只做装配，具体逻辑在各自的模块里。
 
 import type { Context } from '@deepseek-ai/cordis';
-import { createConfigSource } from './config.js';
+import { createRuntime } from './config.js';
 import { createStreamGuard } from './stream-guard.js';
 import { createTurnStoppingGuard } from './turn-stopping-guard.js';
 import type { GuardState } from './types.js';
@@ -35,7 +35,7 @@ export default function repeatGuard(ctx: Context): void {
   // 直接写 stdout：dsh 把插件的 stdout 收进 journal，便于确认插件确实被加载。
   console.log('[repeat-guard] 已加载，复读拦截生效');
   const state: GuardState = { pending: new Set() };
-  const readConfig = createConfigSource(ctx);
-  ctx.on('llm/stream', createStreamGuard(state, readConfig), { global: true });
-  ctx.on('agent/turn-stopping', createTurnStoppingGuard(state));
+  const runtime = createRuntime(ctx);
+  ctx.on('llm/stream', createStreamGuard(state, runtime.read, runtime.countHit), { global: true });
+  ctx.on('agent/turn-stopping', createTurnStoppingGuard(state, runtime.read));
 }

@@ -29,6 +29,7 @@ type StreamListener = (
  * @param sessionId - 当前会话 id；有值才登记待续跑标记。
  * @param state - 跨监听保留的拦截状态。
  * @param readConfig - 取当前配置；每个 chunk 现取，改设置立即生效。
+ * @param countHit - 记一次拦截；只在真的掐断时调用。
  * @returns 包好的流。
  */
 async function* guardStream(
@@ -36,6 +37,7 @@ async function* guardStream(
   sessionId: GenerateOptions['sessionId'],
   state: GuardState,
   readConfig: ConfigSource,
+  countHit: () => void,
 ): AsyncGenerator<StreamChunk> {
   const iterator = downstream[Symbol.asyncIterator]();
   let accumulated = '';
@@ -49,10 +51,16 @@ async function* guardStream(
       if (chunk.type === 'reasoning-delta') {
         accumulated += chunk.text;
         const config = readConfig();
-        const hit = findDegenerateLine(accumulated, config.fragments, config.threshold);
+        const hit = findDegenerateLine(
+          accumulated,
+          config.fragments,
+          config.threshold,
+          config.inlineRepeat,
+        );
         if (hit !== null) {
           const probe = await iterator.next();
           if (!probe.done && probe.value.type === 'reasoning-delta') {
+            countHit();
             if (sessionId !== undefined) {
               state.pending.add(sessionId);
             }
@@ -92,14 +100,19 @@ async function* guardStream(
  * 造一个 `llm/stream` 监听器。
  * @param state - 跨监听保留的拦截状态。
  * @param readConfig - 取当前配置。
+ * @param countHit - 记一次拦截。
  * @returns 监听器；辅助调用直接透传，其余包一层复读检测。
  */
-export function createStreamGuard(state: GuardState, readConfig: ConfigSource): StreamListener {
+export function createStreamGuard(
+  state: GuardState,
+  readConfig: ConfigSource,
+  countHit: () => void,
+): StreamListener {
   return (options, next) => {
     // 辅助调用（上下文压缩、会话标题）不参与检测。
     if (options.purpose !== undefined) {
       return next();
     }
-    return guardStream(next(), options.sessionId, state, readConfig);
+    return guardStream(next(), options.sessionId, state, readConfig, countHit);
   };
 }
