@@ -1,6 +1,6 @@
 {
   "name": "dsh-repeat-guard",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "流式输出退化拦截：检测碎片复读，掐断本次生成并提醒模型直接执行工具调用",
   "type": "module",
   "main": "lib/index.js",
