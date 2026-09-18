@@ -4,11 +4,10 @@
 
 | 项 | 说明 |
 |---|---|
-| 类型 | dsh host 侧插件（函数式） |
+| 类型 | dsh bundle，含宿主侧插件与客户端设置页 |
 | 监听 | `llm/stream`、`agent/turn-stopping` |
-| 运行时依赖 | **无**，不产生任何运行时 import |
-| 构建期依赖 | 仅 TypeScript |
-| 入口 | `lib/index.js`（由 `src/index.ts` 编译得到） |
+| 入口 | `lib/index.js`（`src/index.ts`）、`lib/client.js`（`src/client.tsx`） |
+| 可调项 | 拦截短句表、连续命中阈值（设置 → 复读打断） |
 | 分发 | npm 包 `dsh-repeat-guard` |
 
 ---
@@ -50,9 +49,31 @@
 | `好？` `好！` `好` `OK` | 不拦（表外） |
 | `我需要检查实现。\n然后重新编译。` | 不拦（各行都在表外） |
 
-**表在 `src/detect.ts` 的 `FRAGMENTS` 数组里**，增删词条改它即可。表项**连标点一起写**（`'好的。'` 对应思考里的 `好的。`），英文条目一律写小写。
+表项**连标点一起写**（`'好的。'` 对应思考里的 `好的。`），英文条目一律写小写。分割单位是单个换行，空行会把连续计数打断。
+
+**表可以在设置里改**（见下面「可调项」）；`src/config.ts` 的 `DEFAULT_FRAGMENTS` 是出厂默认值。
 
 已知边界：判据只看"有没有这样一行"，不看上下文。所以"用户想让我改代码。\n好的。"这种**前面有实质内容、结尾又跟一句空话**的思考也会被拦。这是"按行判定"的直接结果。
+
+## 连续命中阈值
+
+阈值 `threshold` 是"连着几行命中才拦"：
+
+| 值 | 行为 |
+|---|---|
+| 1（默认） | 任意一行命中即拦 |
+| n | 连着 n 行都是表项（**句子可以各不相同**）才拦；中间夹一行不命中的就重新计数 |
+
+阈值只在**同一次生成内**计数，不跨轮次。
+
+## 命中在思考段末尾时不拦
+
+命中之后，插件再往下探一格：
+
+- 后面还是 `reasoning-delta` → 思考确实在继续复读，**拦**；
+- 后面换成正文、工具调用，或直接收尾（`block-end` / `usage` / `finish` / 流结束）→ 说明命中行本来就是这段思考的最后一句，**不拦**，原样透传。
+
+判据是**思考段是否还在往下写**，不是整个响应是否结束——思考以一句"好。"收尾、接着写正文，属正常收尾。
 
 ## 工作原理
 
@@ -63,10 +84,12 @@
 
 辅助调用（上下文压缩、会话标题等带 `purpose` 的调用）不参与检测。
 
-每次拦截都会把**命中的那一行原文**写进 journal，便于事后核对误杀：
+三种结局各有日志，便于事后核对误杀：
 
 ```
-[repeat-guard] 检出思考段复读，已掐断本次生成 | 命中行="好的。"
+[repeat-guard] 检出思考段复读，已掐断本次生成 | 会话=… | 命中行="好的。"
+[repeat-guard] 命中行位于思考段末尾，未拦截 | 会话=… | 命中行="好的。"
+[repeat-guard] turn-stopping：会话 … 续跑一步
 ```
 
 ## 掐断之后怎么让本轮继续
@@ -80,19 +103,23 @@ if (turnEnds && this.inbox.nextStep.length === 0) {
 if (turnEnds && this.inbox.nextStep.length === 0) break;   // 重读收件箱
 ```
 
-`agent/turn-stopping` 在 `break` 之前被 `await`，之后收件箱会被**重新读一次**。所以只要监听器往 `inbox.nextStep` 里推入东西，本轮就不 break，而是再跑一步。官方对该事件的说明也写明了这个用法，先例见 `dsh-hooks-claude-code/lib/index.js:292`。
+`agent/turn-stopping` 在 `break` 之前被 `await`，之后收件箱会被**重新读一次**。所以只要监听器往 `inbox.nextStep` 里推入东西，本轮就不 break，而是再跑一步。官方对该事件的说明也写明了这个用法，先例见 `dsh-hooks-claude-code/lib/index.js:300`。
 
 注意：
 
 - **做不到"这一步当作没发生"。** 被截断的 assistant 消息在 `step()` 里已经 `session.append` 落盘，dsh 没有回滚一步的机制；`step()` 唯一返回 `null`（循环继续）的出口要求本步真的产生了 tool-call，插件够不着。所以这里的语义是"接着再跑一步"，会话里会留下被截断的思考记录。
+- **续跑没有次数配额。** 有标记就推，同一轮里反复退化就反复续跑。
 
 ## 可调项
 
-判定本身没有阈值，只有 `src/detect.ts` 里的 `FRAGMENTS` 表。改完需要重新构建。
+在 **设置 → 复读打断** 里改，保存后宿主侧立即按新配置判定，不用重启。
 
-| 项 | 位置 | 含义 |
-|---|---|---|
-| `FRAGMENTS` | `src/detect.ts` | 会被判为复读的空话短句表，增删词条改它 |
+| 项 | 含义 |
+|---|---|
+| 拦截短句 | 判为复读的空话短句表，一行一句，连标点一起写 |
+| 连续命中次数 | 连着几行命中才拦；默认 1 = 发现即拦 |
+
+配置存在 dsh 的 settings 服务里（命名空间 `repeat-guard`），落盘位置由 dsh 决定。
 
 ## 续跑时推给模型的输入
 
@@ -108,8 +135,19 @@ if (turnEnds && this.inbox.nextStep.length === 0) break;   // 重读收件箱
 
 ```bash
 npm install
-npm run build        # 等价于 tsc，产出 lib/
+npm run build        # tsc 产出 lib/*.js，再用 esbuild 打 lib/client.js
 ```
+
+两步各有各的产物：
+
+- `tsc` 编译 `src/*.ts` → `lib/*.js`，宿主侧入口就是 `lib/index.js`（真正被 dsh import 的部分）。
+- `scripts/build-client.mjs` 用 esbuild 把 `src/client.tsx` 打成**单文件** `lib/client.js`，外面套一层 dsh 客户端模块系统要求的包装：
+
+  ```js
+  window.__ModuleLoader__.load({ id: "dsh-repeat-guard", factory: function (require) { … } });
+  ```
+
+  `id` 必须是包名，`factory` 的返回值就是该包的客户端模块导出。`react` 等平台基座模块由模块系统提供，构建时设为 external，运行时从 `factory` 的 `require` 参数取。
 
 `lib/` **不进版本库**：`npm publish` 前由 `prepack` 钩子现构建，随包发布（`files` 字段已含 `lib`）。这样"改了 `src/` 忘了 build"不会让旧产物静默跟着提交——代价是构建失败时发不出去，这是有意的。
 
@@ -122,7 +160,7 @@ npm publish --registry=https://registry.npmjs.org
 
 **两条命令都别省 `--registry`。** npm 的凭据是**按源绑定**的：`npm login` 登的是哪个源，`~/.npmrc` 里就只在那个源下记一条 `//registry.npmjs.org/:_authToken`。所以 `npm config get registry` 一旦被切到 npmmirror 这类只读镜像（它本身也发不上去），不带参数的 `npm publish` 会直接报 `need auth`。
 
-发布前不必手动构建，`prepack` 会跑一次 `npm run build`；tsc 报错则发布中止。
+发布前不必手动构建，`prepack` 会跑一次 `npm run build`；tsc 或 esbuild 报错则发布中止。
 
 ## 安装到 dsh
 
@@ -130,7 +168,7 @@ npm publish --registry=https://registry.npmjs.org
 dsh plugin --profile web add dsh-repeat-guard
 ```
 
-本插件是一个 **dsh bundle**——包根带 `cordis.patch.yml`，由 `package.json` 的 `dsh.bundle.patch` 声明。装进 profile 时它会自动进入 `dsh.profile.bundles` 分层栈，**不需要改 profile 自己的 `cordis.patch.yml`**。
+本插件是一个 **dsh bundle**——包根带 `cordis.patch.yml`，由 `package.json` 的 `dsh.bundle.patch` 声明。装进 profile 时它会自动进入 `dsh.profile.bundles` 分层栈，**不需要改 profile 自己的 `cordis.patch.yml`**。客户端半靠 `package.json` 的 `dsh.client` 声明被自动发现，同样不用改 profile。
 
 装完**必须重启 dsh 进程**。`patchReload: live` 只重载已有的层，不会加载新增的层——实测编辑后运行中的进程既不加载也不报错。
 
@@ -151,12 +189,15 @@ journalctl --user -u dsh-web --no-pager | grep -a repeat-guard
 
 dsh 会把 bundle 声明的 `dependencies` 与 `peerDependencies` 从安装目录软链进 profile（`dsh-app-boot` 的 `healProfileModuleFallback`，依赖名取自 `profileDependencyNames(manifest)`，注释原文是 "dependency names that may be imported by a loader-visible plugin"）。软链落在 `~/.dsh/profiles/node_modules/`，Node 按常规向上查找即可解析到。
 
+dsh 的 profile 同时带一份 `.npmrc`，写着 `auto-install-peers=false`（注释：core packages come from the CLI dependency tree; a profile must never resolve its own copy）——所以声明 `peerDependencies` 不会让 profile 自己再装一份宿主包。
+
 所以：
 
-- **宿主提供的包写 `peerDependencies`**：`@deepseek-ai/cordis`、`@deepseek-ai/dsh-llm`、`@deepseek-ai/dsh-agent`。它们不在 profile 里重复安装，用 dsh 自带的那份。
-- **类型一律从官方引**，不在本地重抄。`Context`、`StreamChunk`、`GenerateOptions`、`Agent`、`UserMessage` 都是 dsh 导出的；本地抄一份只会在 dsh 升级后于运行时暴露字段对不上，官方声明则会在 `tsc` 阶段直接报错。
+- **宿主提供的包写 `peerDependencies`**：`@deepseek-ai/cordis`、`dsh-llm`、`dsh-agent`、`dsh-settings`、`schemastery`、`dsh-client-ui-renderer`、`dsh-client-ui-settings`，以及客户端侧由平台基座提供的 `react`。它们不在 profile 里重复安装，用 dsh 自带的那份。
+- **类型一律从官方引**，不在本地重抄。`Context`、`StreamChunk`、`GenerateOptions`、`Agent`、`SettingsScope` 都是 dsh 导出的；本地抄一份只会在 dsh 升级后于运行时暴露字段对不上，官方声明则会在 `tsc` 阶段直接报错。
 - `src/types.ts` 只放本插件自有的类型（当前是 `GuardState`）。
-- 仍然只用 TypeScript 写源码，由 `tsc` 产出 `lib/` 供 dsh 加载。dsh 的 loader 是原生 ESM import，**没有转译层**，运行时读到的永远是编译产物——改完 `src/` 必须重新构建。`lib/` 只随 npm 包发布，不进版本库。
+- 部分 dsh 包的类型只通过 module augmentation 生效（如 `Context.settings`、`Context.slots`、`Context.settingsScope`），要显式 `import type {} from '…'` 触发加载，否则 `tsc` 会报"属性不存在"。
+- dsh 的 loader 是原生 ESM import，**没有转译层**，运行时读到的永远是编译产物——改完 `src/` 必须重新构建。`lib/` 只随 npm 包发布，不进版本库。
 
 ## 代码约定
 
@@ -165,7 +206,7 @@ dsh 会把 bundle 声明的 `dependencies` 与 `peerDependencies` 从安装目�
 | 缩进 / 引号 / 分号 | 2 空格、单引号、语句末分号 |
 | 行宽 | 目标 100 字符，上限 120（中英混排按字符数计） |
 | 控制语句 | **一律带花括号**，单行 `if`、`continue`、`break` 也不例外，不写 `if (x) return;` |
-| 文件 | 一个文件只干一件事：类型声明 / 判定 / 续跑 / 单个监听器 / 装配，各占一个文件 |
+| 文件 | 一个文件只干一件事：类型声明 / 配置 / 判定 / 续跑 / 单个监听器 / 装配，各占一个文件 |
 | 函数 | 不超过 50 行；超了就先看能不能按职责拆开 |
 | 注释 | 一律中文；导出函数与判定函数配 `@param` / `@returns`，文件内小工具函数用单行注释即可 |
 
@@ -176,17 +217,21 @@ dsh 会把 bundle 声明的 `dependencies` 与 `peerDependencies` 从安装目�
 ```
 .
 ├── src/
-│   ├── index.ts                 插件入口：装配状态，注册两个监听器（只做装配）
+│   ├── index.ts                 宿主侧入口：装配状态，注册两个监听器（只做装配）
 │   ├── types.ts                 本插件自有的类型（dsh 的接口一律从 @deepseek-ai/* 引）
-│   ├── detect.ts                复读判定：FRAGMENTS 表 + 查表纯函数，不碰会话状态
+│   ├── config.ts                配置：settings 命名空间、默认值、schema、取当前值
+│   ├── detect.ts                复读判定：查表 + 连续计数，不碰会话状态
 │   ├── resume.ts                续跑：注入文案、消息构造、推送
 │   ├── stream-guard.ts          llm/stream 监听器：思考段检测与掐断
-│   └── turn-stopping-guard.ts   agent/turn-stopping 监听器：让本轮继续
-├── lib/                         tsc 产物（已 gitignore），dsh 实际加载 lib/index.js
+│   ├── turn-stopping-guard.ts   agent/turn-stopping 监听器：让本轮继续
+│   └── client.tsx               客户端设置页：注册 settings.section
+├── scripts/
+│   └── build-client.mjs         esbuild 打包客户端半 → lib/client.js
+├── lib/                         构建产物（已 gitignore），dsh 加载 lib/index.js 与 lib/client.js
+├── cordis.patch.yml             bundle 层声明：把本插件挂进 profile 树
 ├── package.json
 └── tsconfig.json
 ```
-
 
 ## 许可
 

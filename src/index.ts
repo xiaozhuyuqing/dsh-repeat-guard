@@ -9,7 +9,7 @@
 // 开始产出；等正文也碎掉再掐，思考段已经白烧了一遍。
 //
 // 判定做什么：思考段里出现独占一行的表项（如"好。""执行。""Let me go."）就掐断，
-// 表在 detect.ts 的 FRAGMENTS 里。不做形状归纳——归纳出的规则总会外溢误伤，表项则是
+// 短句表与阈值都可配置，见 config.ts。不做形状归纳——归纳出的规则总会外溢误伤，表项则是
 // 具体、可增删、可审计的。
 //
 // 掐断之后要让本轮继续，而不是停下来等用户输入：挂在 `agent/turn-stopping` 上，在本轮
@@ -22,6 +22,7 @@
 // 本文件只做装配，具体逻辑在各自的模块里。
 
 import type { Context } from '@deepseek-ai/cordis';
+import { createConfigSource } from './config.js';
 import { createStreamGuard } from './stream-guard.js';
 import { createTurnStoppingGuard } from './turn-stopping-guard.js';
 import type { GuardState } from './types.js';
@@ -34,6 +35,7 @@ export default function repeatGuard(ctx: Context): void {
   // 直接写 stdout：dsh 把插件的 stdout 收进 journal，便于确认插件确实被加载。
   console.log('[repeat-guard] 已加载，复读拦截生效');
   const state: GuardState = { pending: new Set() };
-  ctx.on('llm/stream', createStreamGuard(state), { global: true });
+  const readConfig = createConfigSource(ctx);
+  ctx.on('llm/stream', createStreamGuard(state, readConfig), { global: true });
   ctx.on('agent/turn-stopping', createTurnStoppingGuard(state));
 }
