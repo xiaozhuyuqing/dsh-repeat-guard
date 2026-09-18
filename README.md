@@ -57,7 +57,7 @@
 ## 工作原理
 
 1. 包一层 `llm/stream`（模型调用的流式 waterfall），逐 chunk 观察 `reasoning-delta`，累积本次响应已产出的思考文本。
-2. 命中退化时，把触发退化的那个 delta 照常放行，补一个 `block-end` 闭合思考块，再补一个 `finish(stop)`，然后结束流。agent-loop 的 `BlockAssembler` 会把这种"没有 finish 就结束"的流当作正常 `stop`，于是本次调用被当成正常完成：已生成的思考照常落盘。
+2. 命中退化时，把触发退化的那个 delta 照常放行，补一个 `block-end` 闭合思考块，再补一个 `finish(stop)`，然后结束流。对 agent-loop 而言这就是一次正常完成：已生成的思考照常落盘，本轮该走什么流程就走什么流程。
 3. 提前结束流时显式向下游传播 `iterator.return()`，否则上游 HTTP 流会继续跑到结束，供应商照常计满 token，且连接悬挂。
 4. 光截断只会让本轮就此结束、停下来等用户输入。所以再挂一个 `agent/turn-stopping` 监听器，在本轮边界提交之前调 `agent.steer(...)` 推一条输入，本轮就会接着再跑一步。
 
@@ -147,16 +147,16 @@ journalctl --user -u dsh-web --no-pager | grep -a repeat-guard
 
 ⚠️ 插件加载失败会让 **dsh 启动直接失败**，而 dsh-web 是本机 GUI 的唯一通道。改完先离线验证再重启：用假上下文 import 产物调一次入口，或喂一段真实 chunk 序列。
 
-## 开发约束：不得 import 外部包
+## 依赖
 
-**不得 import 任何外部包，包括 `@deepseek-ai/cordis`；模块之间只用相对路径互相导入。**
+dsh 会把 bundle 声明的 `dependencies` 与 `peerDependencies` 从安装目录软链进 profile（`dsh-app-boot` 的 `healProfileModuleFallback`，依赖名取自 `profileDependencyNames(manifest)`，注释原文是 "dependency names that may be imported by a loader-visible plugin"）。软链落在 `~/.dsh/profiles/node_modules/`，Node 按常规向上查找即可解析到。
 
-`cordis-plugin-loader` 的 `import()` 对**裸 specifier**（包名）直接 `import(name)`，锚点是 loader 自身的文件位置（dsh 安装目录内部），从 profile 或全局顶层加载时都可能解析不到插件的依赖。而**相对 specifier** 走 `new URL(name, baseUrl)`，由 Node 原生 ESM 按当前文件位置解析，不受影响——所以内部拆模块是安全的，新增模块时只连相对路径即可，源码里要带 `.js` 后缀。
+所以：
 
-由这条约束派生的两点：
-
-- 类型一律在 `src/types.ts` 里声明，不 import dsh 的类型（那还要为 `tsc` 配 `paths` 指向 dsh 安装目录，路径里带 node 版本号，dsh 一升级就失效），也不引 `@types/node`（各模块按需 `declare` 用到的全局）；
-- 只用 TypeScript 写源码，由 `tsc` 产出 `lib/` 供 dsh 加载。dsh 的 loader 是原生 ESM import，**没有转译层**，运行时读到的永远是编译产物——改完 `src/` 必须重新构建才能生效。`lib/` 只随 npm 包发布，不进版本库。
+- **宿主提供的包写 `peerDependencies`**：`@deepseek-ai/cordis`、`@deepseek-ai/dsh-llm`、`@deepseek-ai/dsh-agent`。它们不在 profile 里重复安装，用 dsh 自带的那份。
+- **类型一律从官方引**，不在本地重抄。`Context`、`StreamChunk`、`GenerateOptions`、`Agent`、`UserMessage` 都是 dsh 导出的；本地抄一份只会在 dsh 升级后于运行时暴露字段对不上，官方声明则会在 `tsc` 阶段直接报错。
+- `src/types.ts` 只放本插件自有的类型（当前是 `GuardState`）。
+- 仍然只用 TypeScript 写源码，由 `tsc` 产出 `lib/` 供 dsh 加载。dsh 的 loader 是原生 ESM import，**没有转译层**，运行时读到的永远是编译产物——改完 `src/` 必须重新构建。`lib/` 只随 npm 包发布，不进版本库。
 
 ## 代码约定
 
@@ -177,8 +177,8 @@ journalctl --user -u dsh-web --no-pager | grep -a repeat-guard
 .
 ├── src/
 │   ├── index.ts                 插件入口：装配状态，注册两个监听器（只做装配）
-│   ├── types.ts                 与 dsh 交互的接口声明（纯类型，编译后为空模块）
-│   ├── detect.ts                复读判定：阈值常量 + 纯函数，不碰会话状态
+│   ├── types.ts                 本插件自有的类型（dsh 的接口一律从 @deepseek-ai/* 引）
+│   ├── detect.ts                复读判定：FRAGMENTS 表 + 查表纯函数，不碰会话状态
 │   ├── resume.ts                续跑：注入文案、消息构造、推送
 │   ├── stream-guard.ts          llm/stream 监听器：思考段检测与掐断
 │   └── turn-stopping-guard.ts   agent/turn-stopping 监听器：让本轮继续

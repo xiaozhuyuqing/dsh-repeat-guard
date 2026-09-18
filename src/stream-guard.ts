@@ -4,14 +4,12 @@
  * 只检测 reasoning-delta（思考段）。正文 text-delta 不参与判定，原样透传。
  */
 
+import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm';
 import { findDegenerateLine } from './detect.js';
-import type { GenerateOptions, GuardState, StreamChunk } from './types.js';
-
-/** dsh 跑在 Node 上；只声明本插件用到的全局，避免为此引入 @types/node。 */
-declare const console: { log(...args: unknown[]): void };
+import type { GuardState } from './types.js';
 
 /** `llm/stream` 的监听器签名。 */
-export type StreamListener = (
+type StreamListener = (
   options: GenerateOptions,
   next: () => AsyncIterable<StreamChunk>,
 ) => AsyncIterable<StreamChunk>;
@@ -29,7 +27,7 @@ export type StreamListener = (
  */
 async function* guardStream(
   downstream: AsyncIterable<StreamChunk>,
-  sessionId: string | undefined,
+  sessionId: GenerateOptions['sessionId'],
   state: GuardState,
 ): AsyncGenerator<StreamChunk> {
   const iterator = downstream[Symbol.asyncIterator]();
@@ -41,7 +39,7 @@ async function* guardStream(
         return;
       }
       const chunk = step.value;
-      if (chunk?.type === 'reasoning-delta' && typeof chunk.text === 'string') {
+      if (chunk.type === 'reasoning-delta') {
         accumulated += chunk.text;
         const hit = findDegenerateLine(accumulated);
         if (hit !== null) {
@@ -52,9 +50,8 @@ async function* guardStream(
             `[repeat-guard] 检出思考段复读，已掐断本次生成 | 会话=${sessionId ?? '无'} | 命中行=${JSON.stringify(hit)}`,
           );
           // 触发点本身已经产生了，照常放行；要掐掉的是它之后的思考。
-          const index = chunk.index ?? 0;
           yield chunk;
-          yield { type: 'block-end', index, block: { type: 'reasoning', text: accumulated } };
+          yield { type: 'block-end', index: chunk.index, block: { type: 'reasoning', text: accumulated } };
           yield { type: 'finish', reason: { kind: 'stop' } };
           return;
         }
