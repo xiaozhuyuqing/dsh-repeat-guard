@@ -102,6 +102,14 @@ Let me do it.
 dsh plugin --profile web add dsh-repeat-guard
 ```
 
+> **兼容性**：`0.2.0` 起要求 dsh **0.1.7 及以上**——0.1.7 起宿主会在装载前校验插件的
+> peer 声明，配置表单也换成了 entry Config 模型，旧写法在那上面不再工作。
+> dsh `0.1.0-rc.8` ~ `0.1.6` 请装 `0.1.5`：
+>
+> ```bash
+> dsh plugin --profile web add dsh-repeat-guard@0.1.5
+> ```
+
 ## 许可
 
 MIT，见 `LICENSE`。
