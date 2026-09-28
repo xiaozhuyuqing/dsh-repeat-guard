@@ -23,11 +23,13 @@ import type { GuardState } from './types.js';
 
 // dsh 0.1.7 起 `MessageSourceMap` 没有通用的 `plugin` kind：每个生产者在自己的模块里
 // 声明自己的 kind（merge-extensible），`form` 另由 ContextFormed 提供。
+// 用 `plugin:<名>` 而不是裸名：会话格式 v3→v4 的迁移器对历史消息生成的正是这个前缀
+// （dsh-session-format-v3-to-v4 的 producerKind），裸名会让同一生产者出现两种 kind。
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
     /** 本插件推给模型的续跑提示。 */
-    'repeat-guard': {
-      kind: 'repeat-guard';
+    'plugin:repeat-guard': {
+      kind: 'plugin:repeat-guard';
     } & ContextFormed;
   }
 }
@@ -51,7 +53,7 @@ export function reviveTurn(state: GuardState, agent: Agent, config: RepeatGuardC
       // `form: 'notice'` 要求同时给出 `summary`（dsh-llm 的 ContextFormed），
       // 客户端据此把它渲染成折叠的 context 行，而不是用户气泡。
       source: {
-        kind: 'repeat-guard',
+        kind: 'plugin:repeat-guard',
         form: 'notice',
         summary: config.resumeSummary,
       },
