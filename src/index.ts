@@ -27,8 +27,9 @@ import { createStreamGuard } from './stream-guard.js';
 import { createTurnStoppingGuard } from './turn-stopping-guard.js';
 import type { GuardState } from './types.js';
 
-// 函数式插件的 Config schema 靠这个命名导出被 loader 看见：只有它标了 volatile 的字段
-// 才进得了设置表单，其余字段仍由 cordis 配置文件决定。
+// 插件模块的导出形态：loader 的 unwrapExports 优先取 `default`，而 Config 必须挂在
+// 拿到的那一个对象上。所以这里不写 default 导出，而是与官方插件一样导出
+// `Config` + `apply` 两个具名，让 loader 直接拿到带 schema 的插件对象。
 export { Config };
 
 /**
@@ -37,7 +38,7 @@ export { Config };
  * @param ctx - 宿主 cordis 上下文。
  * @param config - 本插件的配置；volatile 字段是稳定引用，取值要 `.get()`。
  */
-export default function repeatGuard(ctx: Context, config: RepeatGuardConfigSchema): void {
+export function apply(ctx: Context, config: RepeatGuardConfigSchema): void {
   // 直接写 stdout：dsh 把插件的 stdout 收进 journal，便于确认插件确实被加载。
   console.log('[repeat-guard] 已加载，复读拦截生效');
   const state: GuardState = { pending: new Set() };
