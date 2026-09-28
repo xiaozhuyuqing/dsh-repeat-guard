@@ -22,20 +22,26 @@
 // 本文件只做装配，具体逻辑在各自的模块里。
 
 import type { Context } from '@deepseek-ai/cordis';
-import { createRuntime } from './config.js';
+import { Config, createRuntime, type RepeatGuardConfigSchema } from './config.js';
 import { createStreamGuard } from './stream-guard.js';
 import { createTurnStoppingGuard } from './turn-stopping-guard.js';
 import type { GuardState } from './types.js';
 
+// 函数式插件的 Config schema 靠这个命名导出被 loader 看见：只有它标了 volatile 的字段
+// 才进得了设置表单，其余字段仍由 cordis 配置文件决定。
+export { Config };
+
 /**
- * 函数式插件入口。ctx 为 cordis 上下文，注册的监听随插件卸载自动释放。
+ * 函数式插件入口。ctx 为 cordis 上下文，config 是 loader 解析后的配置，
+ * 注册的监听随插件卸载自动释放。
  * @param ctx - 宿主 cordis 上下文。
+ * @param config - 本插件的配置；volatile 字段是稳定引用，取值要 `.get()`。
  */
-export default function repeatGuard(ctx: Context): void {
+export default function repeatGuard(ctx: Context, config: RepeatGuardConfigSchema): void {
   // 直接写 stdout：dsh 把插件的 stdout 收进 journal，便于确认插件确实被加载。
   console.log('[repeat-guard] 已加载，复读拦截生效');
   const state: GuardState = { pending: new Set() };
-  const runtime = createRuntime(ctx);
+  const runtime = createRuntime(ctx, config);
   ctx.on('llm/stream', createStreamGuard(state, runtime.read, runtime.countHit), { global: true });
   ctx.on('agent/turn-stopping', createTurnStoppingGuard(state, runtime.read));
 }

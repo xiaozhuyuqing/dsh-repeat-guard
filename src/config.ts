@@ -2,11 +2,12 @@
  * 插件配置：拦截短句表、连续命中阈值、行内重复检测、续跑注入的正文与摘要，
  * 外加一个运行时计数。
  *
- * 配置放在 dsh 的 settings 服务里（命名空间 repeat-guard）：宿主侧在这边注册
- * schema，客户端设置页写同一个命名空间。判定与续跑时现取，改完立即生效，不用重启。
+ * dsh 0.1.7 起，配置就是插件自己的 entry Config——标记 `.volatile()` 的字段由宿主
+ * 的设置表单读写，写回的是 profile 的 cordis patch。宿主侧不再注册命名空间，
+ * 而是持有这些稳定引用，需要时 `.get()` 现取，所以改完立即生效，不用重启。
  *
- * 计数也寄在同一个命名空间里：宿主侧每次掐断写一次，客户端读同一个值、清零就是
- * 把它写成 0。插件加载时先把它归零，所以口径是"自本次启动或上次清零以来"。
+ * 计数也寄在同一份配置里：宿主侧每次掐断写一次，客户端读同一个值、清零就是把它
+ * 写成 0。插件加载时先把它归零，所以口径是"自本次启动或上次清零以来"。
  */
 
 import type { Context } from '@deepseek-ai/cordis';
@@ -14,8 +15,11 @@ import type { Context } from '@deepseek-ai/cordis';
 import type {} from '@deepseek-ai/dsh-settings';
 import z from '@deepseek-ai/schemastery';
 
-/** settings 命名空间。客户端设置页必须写同一个值。 */
-export const SETTINGS_NS = 'repeat-guard';
+/**
+ * profile 里本插件的条目 id。设置表单按它定位配置，宿主写回也要用它，
+ * 所以必须与 cordis.patch.yml 里的 `id` 逐字一致。
+ */
+export const ENTRY_ID = 'dsh-repeat-guard';
 
 /** 默认的拦截短句表，标点照原样写。 */
 export const DEFAULT_FRAGMENTS: readonly string[] = [
@@ -69,14 +73,21 @@ export const DEFAULT_RESUME_TEXT = [
 /** 默认的折叠行摘要；客户端拿它渲染折叠的 context 行，不是用户气泡。 */
 export const DEFAULT_RESUME_SUMMARY = '复读已截断：请继续执行';
 
-const SCHEMA = z.object({
-  fragments: z.array(z.string()).default([...DEFAULT_FRAGMENTS]),
-  threshold: z.number().default(DEFAULT_THRESHOLD),
-  inlineRepeat: z.boolean().default(DEFAULT_INLINE_REPEAT),
-  resumeText: z.string().default(DEFAULT_RESUME_TEXT),
-  resumeSummary: z.string().default(DEFAULT_RESUME_SUMMARY),
-  count: z.number().default(0),
+/**
+ * 插件 Config schema。只有标了 `.volatile()` 的字段会进设置表单并支持编辑，
+ * 其余字段仍是普通配置（只由 cordis 配置文件决定）。
+ */
+export const Config = z.object({
+  fragments: z.array(z.string()).default([...DEFAULT_FRAGMENTS]).volatile(),
+  threshold: z.number().default(DEFAULT_THRESHOLD).volatile(),
+  inlineRepeat: z.boolean().default(DEFAULT_INLINE_REPEAT).volatile(),
+  resumeText: z.string().default(DEFAULT_RESUME_TEXT).volatile(),
+  resumeSummary: z.string().default(DEFAULT_RESUME_SUMMARY).volatile(),
+  count: z.number().default(0).volatile(),
 });
+
+/** loader 解析后交给插件的配置：volatile 字段是稳定引用，取值要 `.get()`。 */
+export type RepeatGuardConfigSchema = Schemastery.TypeT<typeof Config>;
 
 /** 判定与续跑用得上的一份配置。 */
 export interface RepeatGuardConfig {
@@ -99,7 +110,7 @@ export type ConfigSource = () => RepeatGuardConfig;
 export interface GuardRuntime {
   /** 取当前配置。 */
   readonly read: ConfigSource;
-  /** 记一次拦截，把计数写回 settings。 */
+  /** 记一次拦截，把计数写回配置。 */
   readonly countHit: () => void;
 }
 
@@ -120,43 +131,41 @@ function compile(value: {
 }
 
 /**
- * 注册配置命名空间，返回宿主侧要用的运行时句柄。
+ * 把 volatile 引用折叠成一份快照，返回宿主侧要用的运行时句柄。
  * @param ctx - 宿主 cordis 上下文。
+ * @param config - loader 解析后的本插件配置。
  * @returns 取配置与记数两个入口。
  */
-export function createRuntime(ctx: Context): GuardRuntime {
-  let current = compile({
-    fragments: DEFAULT_FRAGMENTS,
-    threshold: DEFAULT_THRESHOLD,
-    inlineRepeat: DEFAULT_INLINE_REPEAT,
-    resumeText: DEFAULT_RESUME_TEXT,
-    resumeSummary: DEFAULT_RESUME_SUMMARY,
-  });
-  let bump: (() => void) | undefined;
+export function createRuntime(ctx: Context, config: RepeatGuardConfigSchema): GuardRuntime {
+  const read = (): RepeatGuardConfig =>
+    compile({
+      fragments: config.fragments.get(),
+      threshold: config.threshold.get(),
+      inlineRepeat: config.inlineRepeat.get(),
+      resumeText: config.resumeText.get(),
+      resumeSummary: config.resumeSummary.get(),
+    });
 
+  let write: ((count: number) => void) | undefined;
   ctx.inject(['settings'], (settingsCtx) => {
-    const scope = settingsCtx.settings.register(SETTINGS_NS, SCHEMA);
-    const sync = (): void => {
-      current = compile(scope.get());
-    };
-    const write = (patch: object): void => {
-      scope.update(patch).catch((error: unknown) => {
+    const settings = settingsCtx.settings;
+    // 本插件自带设置页，关掉宿主按 schema 自动生成的页面。
+    settingsCtx.effect(() => settings.configure({ auto: false }, ctx.fiber));
+    write = (count: number): void => {
+      // 现取 revision：表单刚写过的话，旧 revision 会被 SETTINGS_CONFLICT 拒掉。
+      const revision = settings.describe().find((entry) => entry.ns === ENTRY_ID)?.revision;
+      settings.update(ENTRY_ID, { count }, revision).catch((error: unknown) => {
         console.log(`[repeat-guard] 写设置失败：${String(error)}`);
       });
     };
-    sync();
-    scope.watch(sync);
     // 计数口径是"自本次启动或上次清零以来"。
-    write({ count: 0 });
-    bump = (): void => {
-      write({ count: scope.get().count + 1 });
-    };
+    write(0);
   });
 
   return {
-    read: () => current,
+    read,
     countHit: () => {
-      bump?.();
+      write?.(config.count.get() + 1);
     },
   };
 }

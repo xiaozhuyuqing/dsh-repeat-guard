@@ -17,8 +17,20 @@
 
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
+import type { ContextFormed } from '@deepseek-ai/dsh-llm';
 import type { RepeatGuardConfig } from './config.js';
 import type { GuardState } from './types.js';
+
+// dsh 0.1.7 起 `MessageSourceMap` 没有通用的 `plugin` kind：每个生产者在自己的模块里
+// 声明自己的 kind（merge-extensible），`form` 另由 ContextFormed 提供。
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    /** 本插件推给模型的续跑提示。 */
+    'repeat-guard': {
+      kind: 'repeat-guard';
+    } & ContextFormed;
+  }
+}
 
 /**
  * 本轮即将关闭时，若上一步刚被掐断过，就推一条输入让本轮继续。
@@ -39,8 +51,7 @@ export function reviveTurn(state: GuardState, agent: Agent, config: RepeatGuardC
       // `form: 'notice'` 要求同时给出 `summary`（dsh-llm 的 ContextFormed），
       // 客户端据此把它渲染成折叠的 context 行，而不是用户气泡。
       source: {
-        kind: 'plugin',
-        plugin: 'repeat-guard',
+        kind: 'repeat-guard',
         form: 'notice',
         summary: config.resumeSummary,
       },

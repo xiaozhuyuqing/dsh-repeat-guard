@@ -11,13 +11,13 @@
 
 import type { Context } from '@deepseek-ai/cordis';
 // 空导入：只为加载这两处的 declaration merging（往 cordis 的 Context 上补
-// slots 与 settingsScope 两个客户端服务）。
+// slots 与 configForms 两个客户端服务）。
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client';
 import { useEffect, useState, type KeyboardEvent, type ReactElement } from 'react';
 
-/** settings 命名空间，必须与宿主侧 config.ts 的 SETTINGS_NS 逐字一致。 */
-const SETTINGS_NS = 'repeat-guard';
+/** profile 条目 id，必须与宿主侧 config.ts 的 ENTRY_ID 逐字一致。 */
+const ENTRY_ID = 'dsh-repeat-guard';
 
 /** 阈值步进器的取值边界。 */
 const THRESHOLD_MIN = 1;
@@ -408,7 +408,7 @@ function Form({ initial, count, onReset, onSave }: FormProps): ReactElement {
 }
 
 /** 注册设置页需要的服务；这两个是 cordis 服务名，不是包名。 */
-export const inject = ['slots', 'settingsScope'];
+export const inject = ['slots', 'configForms'];
 
 /**
  * 客户端插件入口。
@@ -416,14 +416,15 @@ export const inject = ['slots', 'settingsScope'];
  */
 export function apply(ctx: Context): void {
   injectStyle();
-  const scope = ctx.settingsScope.bind<RepeatGuardSettings>({ namespace: SETTINGS_NS });
+  // 0.1.7 起表单按 profile 条目 id 定位；快照与写入接口同形。
+  const form = ctx.configForms.get<RepeatGuardSettings>(ENTRY_ID);
 
   function Panel(): ReactElement {
-    const [snapshot, setSnapshot] = useState(() => scope.getSnapshot());
+    const [snapshot, setSnapshot] = useState(() => form.getSnapshot());
     useEffect(
       () =>
-        scope.subscribe(() => {
-          setSnapshot(scope.getSnapshot());
+        form.subscribe(() => {
+          setSnapshot(form.getSnapshot());
         }),
       [],
     );
@@ -436,14 +437,14 @@ export function apply(ctx: Context): void {
         initial={value}
         count={value.count}
         onReset={async () => {
-          await scope.set('count', 0);
+          await form.set('count', 0);
         }}
         onSave={async (next) => {
-          await scope.set('fragments', next.fragments);
-          await scope.set('threshold', next.threshold);
-          await scope.set('inlineRepeat', next.inlineRepeat);
-          await scope.set('resumeText', next.resumeText);
-          await scope.set('resumeSummary', next.resumeSummary);
+          await form.set('fragments', next.fragments);
+          await form.set('threshold', next.threshold);
+          await form.set('inlineRepeat', next.inlineRepeat);
+          await form.set('resumeText', next.resumeText);
+          await form.set('resumeSummary', next.resumeSummary);
         }}
       />
     );
