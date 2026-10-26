@@ -2,6 +2,7 @@
   "name": "dsh-repeat-guard",
   "version": "0.3.2",
   "description": "流式输出退化拦截：检测碎片复读，掐断本次生成并提醒模型直接执行工具调用",
+  "icon": "./icon.svg",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -18,7 +19,8 @@
   "files": [
     "lib",
     "src",
-    "cordis.patch.yml"
+    "cordis.patch.yml",
+    "icon.svg"
   ],
   "dsh": {
     "bundle": {
