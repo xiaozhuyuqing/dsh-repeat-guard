@@ -55,6 +55,8 @@ export const DEFAULT_FRAGMENTS: readonly string[] = [
   'let me go.',
   'let me do it.',
   'check it.',
+  '查询。',
+  '做。',
 ];
 
 /** 默认阈值：1 表示发现即拦。 */
@@ -64,14 +66,10 @@ export const DEFAULT_THRESHOLD = 1;
 export const DEFAULT_INLINE_REPEAT = false;
 
 /** 默认的续跑指令正文，截断后推给模型。 */
-export const DEFAULT_RESUME_TEXT = [
-  '[复读拦截]',
-  '你上一段思考退化成了碎片复读（反复输出"好。"一类的空话），已被系统截断。',
-  '请直接继续执行下一步，不要再输出任何确认语、寒暄或空话。',
-].join('\n');
+export const DEFAULT_RESUME_TEXT = '上一段思考因输出短句已被截断，请进行工具调用或直接回答。';
 
 /** 默认的折叠行摘要；客户端拿它渲染折叠的 context 行，不是用户气泡。 */
-export const DEFAULT_RESUME_SUMMARY = '复读已截断：请继续执行';
+export const DEFAULT_RESUME_SUMMARY = '已堵住大肥鱼的嘴';
 
 /**
  * 插件 Config schema。只有标了 `.volatile()` 的字段会进设置表单并支持编辑，
@@ -147,6 +145,10 @@ export function createRuntime(ctx: Context, config: RepeatGuardConfigSchema): Gu
     });
 
   let write: ((count: number) => void) | undefined;
+  // 加载时不能直接写设置：热更新期间 apply 跑在 HMR 事务内，而设置写入会再开一个
+  // 事务，0.2.1 起会以 "HMR transactions cannot be nested" 拒绝。所以把归零推迟到
+  // 第一次真正跑流的时机——它由模型调用驱动，不在事务里。
+  let resetPending = true;
   ctx.inject(['settings'], (settingsCtx) => {
     const settings = settingsCtx.settings;
     // 本插件自带设置页，关掉宿主按 schema 自动生成的页面。
@@ -158,13 +160,23 @@ export function createRuntime(ctx: Context, config: RepeatGuardConfigSchema): Gu
         console.log(`[repeat-guard] 写设置失败：${String(error)}`);
       });
     };
-    // 计数口径是"自本次启动或上次清零以来"。
-    write(0);
   });
 
   return {
-    read,
+    read: () => {
+      // 计数口径是"自本次启动或上次清零以来"：首次跑流时把上次启动留下的值清掉。
+      if (resetPending && config.count.get() !== 0) {
+        resetPending = false;
+        write?.(0);
+      }
+      return read();
+    },
     countHit: () => {
+      if (resetPending) {
+        resetPending = false;
+        write?.(1);
+        return;
+      }
       write?.(config.count.get() + 1);
     },
   };
