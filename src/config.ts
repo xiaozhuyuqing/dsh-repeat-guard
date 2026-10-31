@@ -65,6 +65,15 @@ export const DEFAULT_THRESHOLD = 1;
 /** 默认关闭行内重复检测：只认独占一行的整句。 */
 export const DEFAULT_INLINE_REPEAT = false;
 
+/** 密度判据默认窗口：看最后多少个非空行。 */
+export const DEFAULT_DENSITY_WINDOW = 60;
+
+/** 密度判据默认阈值：窗口里碎片行占比达到多少算复读。0 表示关闭。 */
+export const DEFAULT_DENSITY_THRESHOLD = 0;
+
+/** 密度判据里"多长算碎片行"。 */
+export const DEFAULT_SHORT_LINE_CHARS = 8;
+
 /** 默认的续跑指令正文，截断后推给模型。 */
 export const DEFAULT_RESUME_TEXT = '上一段思考因输出短句已被截断，请进行工具调用或直接回答。';
 
@@ -79,6 +88,9 @@ export const Config = z.object({
   fragments: z.array(z.string()).default([...DEFAULT_FRAGMENTS]).volatile(),
   threshold: z.number().default(DEFAULT_THRESHOLD).volatile(),
   inlineRepeat: z.boolean().default(DEFAULT_INLINE_REPEAT).volatile(),
+  densityWindow: z.number().default(DEFAULT_DENSITY_WINDOW).volatile(),
+  densityThreshold: z.number().default(DEFAULT_DENSITY_THRESHOLD).volatile(),
+  shortLineChars: z.number().default(DEFAULT_SHORT_LINE_CHARS).volatile(),
   resumeText: z.string().default(DEFAULT_RESUME_TEXT).volatile(),
   resumeSummary: z.string().default(DEFAULT_RESUME_SUMMARY).volatile(),
   count: z.number().default(0).volatile(),
@@ -95,6 +107,12 @@ export interface RepeatGuardConfig {
   readonly threshold: number;
   /** 是否把"整行由多个表项拼成"也算命中。 */
   readonly inlineRepeat: boolean;
+  /** 密度判据窗口：看最后多少个非空行。 */
+  readonly densityWindow: number;
+  /** 密度判据阈值：碎片行占比达到多少算复读；0 表示关闭。 */
+  readonly densityThreshold: number;
+  /** 多长算碎片行。 */
+  readonly shortLineChars: number;
   /** 截断后推给模型的指令正文。 */
   readonly resumeText: string;
   /** 注入消息的折叠行摘要。 */
@@ -116,6 +134,9 @@ function compile(value: {
   fragments: readonly string[];
   threshold: number;
   inlineRepeat: boolean;
+  densityWindow: number;
+  densityThreshold: number;
+  shortLineChars: number;
   resumeText: string;
   resumeSummary: string;
 }): RepeatGuardConfig {
@@ -123,6 +144,9 @@ function compile(value: {
     fragments: new Set(value.fragments.map((fragment) => fragment.toLowerCase())),
     threshold: value.threshold,
     inlineRepeat: value.inlineRepeat,
+    densityWindow: value.densityWindow,
+    densityThreshold: value.densityThreshold,
+    shortLineChars: value.shortLineChars,
     resumeText: value.resumeText,
     resumeSummary: value.resumeSummary,
   };
@@ -140,6 +164,9 @@ export function createRuntime(ctx: Context, config: RepeatGuardConfigSchema): Gu
       fragments: config.fragments.get(),
       threshold: config.threshold.get(),
       inlineRepeat: config.inlineRepeat.get(),
+      densityWindow: config.densityWindow.get(),
+      densityThreshold: config.densityThreshold.get(),
+      shortLineChars: config.shortLineChars.get(),
       resumeText: config.resumeText.get(),
       resumeSummary: config.resumeSummary.get(),
     });
