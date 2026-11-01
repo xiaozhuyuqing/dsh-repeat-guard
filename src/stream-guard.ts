@@ -6,7 +6,7 @@
 
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm';
 import type { ConfigSource } from './config.js';
-import { findDegenerateLine } from './detect.js';
+import { findDegenerateDensity, findDegenerateLine } from './detect.js';
 import type { GuardState } from './types.js';
 
 /** `llm/stream` 的监听器签名。 */
@@ -51,12 +51,25 @@ async function* guardStream(
       if (chunk.type === 'reasoning-delta') {
         accumulated += chunk.text;
         const config = readConfig();
-        const hit = findDegenerateLine(
-          accumulated,
-          config.fragments,
-          config.threshold,
-          config.inlineRepeat,
-        );
+        // 两条判据并行：
+        // ① 连续命中——管「做。做。做。」一长串；
+        // ② 密度——管「做。（调用）做。（执行）做。」这种被假装动作切碎的形态，
+        //    连续长度永远到不了阈值，但整段思考已经全是碎片。
+        const hit =
+          findDegenerateLine(
+            accumulated,
+            config.fragments,
+            config.threshold,
+            config.inlineRepeat,
+          ) ??
+          (config.densityThreshold > 0
+            ? findDegenerateDensity(
+                accumulated,
+                config.densityWindow,
+                config.densityThreshold,
+                config.shortLineChars,
+              )
+            : null);
         if (hit !== null) {
           const probe = await iterator.next();
           if (!probe.done && probe.value.type === 'reasoning-delta') {

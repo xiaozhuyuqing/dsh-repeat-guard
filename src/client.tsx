@@ -31,6 +31,12 @@ interface RepeatGuardSettings {
   threshold: number;
   /** 是否把"整行由多个表项拼成"也算命中。 */
   inlineRepeat: boolean;
+  /** 密度判据窗口：看最近多少个非空行。 */
+  densityWindow: number;
+  /** 密度判据阈值：碎片行占比达到多少算复读；0 表示关闭。 */
+  densityThreshold: number;
+  /** 多长算碎片行。 */
+  shortLineChars: number;
   /** 截断后推给模型的指令正文。 */
   resumeText: string;
   /** 注入消息的折叠行摘要。 */
@@ -260,6 +266,9 @@ function Form({ initial, count, onReset, onSave }: FormProps): ReactElement {
   const [items, setItems] = useState<readonly string[]>(initial.fragments);
   const [limit, setLimit] = useState(initial.threshold);
   const [inlineRepeat, setInlineRepeat] = useState(initial.inlineRepeat);
+  const [densityWindow, setDensityWindow] = useState(initial.densityWindow);
+  const [densityThreshold, setDensityThreshold] = useState(String(initial.densityThreshold));
+  const [shortLineChars, setShortLineChars] = useState(initial.shortLineChars);
   const [resumeText, setResumeText] = useState(initial.resumeText);
   const [resumeSummary, setResumeSummary] = useState(initial.resumeSummary);
   const [draft, setDraft] = useState('');
@@ -286,6 +295,9 @@ function Form({ initial, count, onReset, onSave }: FormProps): ReactElement {
       fragments: [...items],
       threshold: limit,
       inlineRepeat,
+      densityWindow,
+      densityThreshold: Number(densityThreshold) || 0,
+      shortLineChars,
       resumeText,
       resumeSummary,
       count,
@@ -358,6 +370,62 @@ function Form({ initial, count, onReset, onSave }: FormProps): ReactElement {
           label="行内重复检测"
           onChange={(next) => {
             setInlineRepeat(next);
+            setNote('');
+          }}
+        />
+      </div>
+      <div className="rg-row">
+        <div className="rg-rowText">
+          <div className="rg-rowTitle">密度判据</div>
+          <div className="rg-rowDesc">
+            碎片行占比达到阈值就拦；填 0 关闭。管「做。（调用）做。」这种被假装动作切碎的复读。
+          </div>
+        </div>
+        <input
+          className="rg-stepperValue"
+          style={{ width: '64px', height: '36px', textAlign: 'center' }}
+          type="number"
+          min={0}
+          max={1}
+          step={0.05}
+          value={densityThreshold}
+          aria-label="密度阈值"
+          onChange={(event) => {
+            setDensityThreshold(event.target.value);
+            setNote('');
+          }}
+        />
+      </div>
+      <div className="rg-row">
+        <div className="rg-rowText">
+          <div className="rg-rowTitle">密度窗口</div>
+          <div className="rg-rowDesc">判密度时看最近多少个非空行</div>
+        </div>
+        <Stepper
+          value={densityWindow}
+          min={10}
+          max={200}
+          unit="行"
+          label="密度窗口"
+          onChange={(next) => {
+            setDensityWindow(next);
+            setNote('');
+          }}
+        />
+      </div>
+      <div className="rg-row">
+        <div className="rg-rowText">
+          <div className="rg-rowTitle">碎片行长度</div>
+          <div className="rg-rowDesc">多长以内的行算碎片</div>
+        </div>
+        <Stepper
+          value={shortLineChars}
+          min={2}
+          max={20}
+          unit="字"
+          label="碎片行长度"
+          onChange={(next) => {
+            setShortLineChars(next);
             setNote('');
           }}
         />
