@@ -86,11 +86,11 @@ export const DEFAULT_RESUME_SUMMARY = '已堵住大肥鱼的嘴';
  */
 export const Config = z.object({
   fragments: z.array(z.string()).default([...DEFAULT_FRAGMENTS]).volatile(),
-  threshold: z.number().default(DEFAULT_THRESHOLD).volatile(),
+  threshold: z.number().min(1).default(DEFAULT_THRESHOLD).volatile(),
   inlineRepeat: z.boolean().default(DEFAULT_INLINE_REPEAT).volatile(),
-  densityWindow: z.number().default(DEFAULT_DENSITY_WINDOW).volatile(),
-  densityThreshold: z.number().default(DEFAULT_DENSITY_THRESHOLD).volatile(),
-  shortLineChars: z.number().default(DEFAULT_SHORT_LINE_CHARS).volatile(),
+  densityWindow: z.number().min(1).default(DEFAULT_DENSITY_WINDOW).volatile(),
+  densityThreshold: z.number().min(0).max(1).default(DEFAULT_DENSITY_THRESHOLD).volatile(),
+  shortLineChars: z.number().min(1).default(DEFAULT_SHORT_LINE_CHARS).volatile(),
   resumeText: z.string().default(DEFAULT_RESUME_TEXT).volatile(),
   resumeSummary: z.string().default(DEFAULT_RESUME_SUMMARY).volatile(),
   count: z.number().default(0).volatile(),
